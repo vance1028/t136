@@ -1,6 +1,5 @@
 'use strict';
 
-// 测试使用内存库，必须在 require 任何用到 db 的模块之前设置。
 process.env.DB_FILE = ':memory:';
 process.env.JWT_SECRET = 'test-secret';
 
@@ -39,7 +38,8 @@ test('登录：正确账号密码返回 token 和用户信息', async () => {
   assert.strictEqual(res.status, 200);
   assert.ok(res.body.data.token);
   assert.strictEqual(res.body.data.user.role, 'admin');
-  assert.strictEqual(res.body.data.user.name, '系统管理员'); // 中文不乱码
+  assert.strictEqual(res.body.data.user.name, '合作社管理员');
+  assert.strictEqual(res.body.data.user.userType, 'internal');
 });
 
 test('登录：错误密码被拒', async () => {
@@ -56,10 +56,11 @@ test('未带令牌访问受保护接口返回 401', async () => {
 
 test('GET /api/auth/me 返回当前用户', async () => {
   beforeEachReset();
-  const token = await loginAs('keeper', 'keeper123');
+  const token = await loginAs('beekeeper1', 'bee123');
   const res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${token}`);
   assert.strictEqual(res.status, 200);
-  assert.strictEqual(res.body.data.username, 'keeper');
+  assert.strictEqual(res.body.data.username, 'beekeeper1');
+  assert.strictEqual(res.body.data.role, 'operator');
 });
 
 test('蜂场列表能读到种子数据，中文字段正确', async () => {
@@ -74,11 +75,11 @@ test('蜂场列表能读到种子数据，中文字段正确', async () => {
 
 test('operator 可新建蜂场并能再查到（含中文）', async () => {
   beforeEachReset();
-  const token = await loginAs('keeper', 'keeper123');
+  const token = await loginAs('beekeeper1', 'bee123');
   const create = await request(app)
     .post('/api/apiaries')
     .set('Authorization', `Bearer ${token}`)
-    .send({ code: 'FC-GZ-009', name: '甘孜高原中蜂示范场', location: '甘孜州康定折多山', district: '甘孜州', keeper: '王养蜂' });
+    .send({ code: 'FC-GZ-009', name: '甘孜高原中蜂示范场', location: '甘孜州康定折多山', district: '甘孜州', ownerId: 2 });
   assert.strictEqual(create.status, 201, JSON.stringify(create.body));
   const id = create.body.data.id;
   const get = await request(app).get(`/api/apiaries/${id}`).set('Authorization', `Bearer ${token}`);
@@ -109,7 +110,7 @@ test('蜂场编号重复返回 409', async () => {
 
 test('蜂箱：列出某蜂场的蜂箱、新建蜂箱', async () => {
   beforeEachReset();
-  const token = await loginAs('keeper', 'keeper123');
+  const token = await loginAs('beekeeper1', 'bee123');
   const apiaries = (await request(app).get('/api/apiaries').set('Authorization', `Bearer ${token}`)).body.data;
   const a1 = apiaries.find((a) => a.code === 'FC-ABA-001');
   const list = await request(app).get(`/api/apiaries/${a1.id}/hives`).set('Authorization', `Bearer ${token}`);
@@ -126,7 +127,7 @@ test('蜂箱：列出某蜂场的蜂箱、新建蜂箱', async () => {
 
 test('检查记录：为蜂箱登记并按蜂箱查询', async () => {
   beforeEachReset();
-  const token = await loginAs('keeper', 'keeper123');
+  const token = await loginAs('beekeeper1', 'bee123');
   const hives = (await request(app).get('/api/hives').set('Authorization', `Bearer ${token}`)).body.data;
   const hive = hives[0];
   const create = await request(app)
@@ -158,7 +159,7 @@ test('采收批次：登记并按蜂场过滤', async () => {
 
 test('删除蜂场需要 admin，operator 删除被拒 403', async () => {
   beforeEachReset();
-  const token = await loginAs('keeper', 'keeper123');
+  const token = await loginAs('beekeeper1', 'bee123');
   const apiaries = (await request(app).get('/api/apiaries').set('Authorization', `Bearer ${token}`)).body.data;
   const res = await request(app).delete(`/api/apiaries/${apiaries[0].id}`).set('Authorization', `Bearer ${token}`);
   assert.strictEqual(res.status, 403);
@@ -168,4 +169,165 @@ test('不存在的接口返回 404', async () => {
   beforeEachReset();
   const res = await request(app).get('/api/not-exist');
   assert.strictEqual(res.status, 404);
+});
+
+test('行级过滤：蜂农只能看到自己的蜂场', async () => {
+  beforeEachReset();
+  const token1 = await loginAs('beekeeper1', 'bee123');
+  const res1 = await request(app).get('/api/apiaries').set('Authorization', `Bearer ${token1}`);
+  assert.strictEqual(res1.status, 200);
+  const codes1 = res1.body.data.map((a) => a.code);
+  assert.strictEqual(codes1.length, 1);
+  assert.ok(codes1.includes('FC-ABA-001'));
+  assert.ok(!codes1.includes('FC-YA-002'));
+
+  const token2 = await loginAs('beekeeper2', 'bee456');
+  const res2 = await request(app).get('/api/apiaries').set('Authorization', `Bearer ${token2}`);
+  assert.strictEqual(res2.status, 200);
+  const codes2 = res2.body.data.map((a) => a.code);
+  assert.strictEqual(codes2.length, 1);
+  assert.ok(codes2.includes('FC-YA-002'));
+  assert.ok(!codes2.includes('FC-ABA-001'));
+});
+
+test('行级过滤：管理员能看到所有蜂场', async () => {
+  beforeEachReset();
+  const token = await loginAs('admin', 'admin123');
+  const res = await request(app).get('/api/apiaries').set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.data.length, 3);
+});
+
+test('行级过滤：蜂农只能看到自己蜂场的蜂箱', async () => {
+  beforeEachReset();
+  const token1 = await loginAs('beekeeper1', 'bee123');
+  const res1 = await request(app).get('/api/hives').set('Authorization', `Bearer ${token1}`);
+  assert.strictEqual(res1.status, 200);
+  const codes1 = res1.body.data.map((h) => h.code);
+  assert.strictEqual(codes1.length, 3);
+  assert.ok(codes1.includes('XF-001'));
+  assert.ok(!codes1.includes('YA-001'));
+});
+
+test('字段脱敏：viewer 看采收批次看不到 internalCost', async () => {
+  beforeEachReset();
+  const token = await loginAs('viewer', 'viewer123');
+  const res = await request(app).get('/api/harvests').set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(res.status, 200);
+  const harvest = res.body.data.find((h) => h.batchNo === 'HV-2026-0001');
+  assert.strictEqual(harvest.batchNo, 'HV-2026-0001');
+  assert.strictEqual(harvest.quantityKg, 28.5);
+  assert.strictEqual(harvest.internalCost, null);
+  assert.strictEqual(harvest.note, null);
+});
+
+test('字段脱敏：admin 看采收批次能看到 internalCost', async () => {
+  beforeEachReset();
+  const token = await loginAs('admin', 'admin123');
+  const res = await request(app).get('/api/harvests').set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(res.status, 200);
+  const harvest = res.body.data.find((h) => h.batchNo === 'HV-2026-0001');
+  assert.strictEqual(harvest.batchNo, 'HV-2026-0001');
+  assert.strictEqual(harvest.quantityKg, 28.5);
+  assert.strictEqual(harvest.internalCost, 85.5);
+  assert.strictEqual(harvest.note, '高山百花蜜，波美度合格');
+});
+
+test('越权访问：蜂农访问别人的蜂场被拒绝（403）', async () => {
+  beforeEachReset();
+  const token1 = await loginAs('beekeeper1', 'bee123');
+  const token2 = await loginAs('beekeeper2', 'bee456');
+
+  const res2 = await request(app).get('/api/apiaries').set('Authorization', `Bearer ${token2}`);
+  const yaApiary = res2.body.data.find((a) => a.code === 'FC-YA-002');
+  assert.ok(yaApiary);
+
+  const res = await request(app).get(`/api/apiaries/${yaApiary.id}`).set('Authorization', `Bearer ${token1}`);
+  assert.strictEqual(res.status, 403);
+});
+
+test('收购方只能看到被授权的采收批次', async () => {
+  beforeEachReset();
+  const token = await loginAs('buyer1', 'buyer123');
+  const res = await request(app).get('/api/harvests').set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(res.status, 200);
+  const batchNos = res.body.data.map((h) => h.batchNo);
+  assert.strictEqual(batchNos.length, 2);
+  assert.ok(batchNos.includes('HV-2026-0001'));
+  assert.ok(batchNos.includes('HV-2026-0002'));
+  assert.ok(!batchNos.includes('HV-2026-0003'));
+});
+
+test('收购方看不到内部敏感字段', async () => {
+  beforeEachReset();
+  const token = await loginAs('buyer1', 'buyer123');
+  const res = await request(app).get('/api/harvests').set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(res.status, 200);
+  const harvest = res.body.data.find((h) => h.batchNo === 'HV-2026-0001');
+  assert.strictEqual(harvest.batchNo, 'HV-2026-0001');
+  assert.strictEqual(harvest.quantityKg, 28.5);
+  assert.strictEqual(harvest.apiaryId, null);
+  assert.strictEqual(harvest.internalCost, null);
+  assert.strictEqual(harvest.note, null);
+});
+
+test('收购方无权访问蜂场、蜂箱等内部资源', async () => {
+  beforeEachReset();
+  const token = await loginAs('buyer1', 'buyer123');
+
+  const res1 = await request(app).get('/api/apiaries').set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(res1.status, 403);
+
+  const res2 = await request(app).get('/api/hives').set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(res2.status, 403);
+
+  const res3 = await request(app).get('/api/users').set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(res3.status, 403);
+});
+
+test('越权修改：蜂农不能修改别人的蜂场', async () => {
+  beforeEachReset();
+  const token1 = await loginAs('beekeeper1', 'bee123');
+  const token2 = await loginAs('beekeeper2', 'bee456');
+
+  const res2 = await request(app).get('/api/apiaries').set('Authorization', `Bearer ${token2}`);
+  const yaApiary = res2.body.data.find((a) => a.code === 'FC-YA-002');
+
+  const updateRes = await request(app)
+    .put(`/api/apiaries/${yaApiary.id}`)
+    .set('Authorization', `Bearer ${token1}`)
+    .send({ name: '被篡改的名称' });
+  assert.strictEqual(updateRes.status, 403);
+});
+
+test('字段脱敏：viewer 看检查记录看不到病害和内部备注', async () => {
+  beforeEachReset();
+  const token = await loginAs('viewer', 'viewer123');
+  const res = await request(app).get('/api/hives').set('Authorization', `Bearer ${token}`);
+  const hiveId = res.body.data[0].id;
+
+  const inspections = await request(app).get(`/api/hives/${hiveId}/inspections`).set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(inspections.status, 200);
+  if (inspections.body.data.length > 0) {
+    const insp = inspections.body.data[0];
+    assert.strictEqual(insp.disease, null);
+    assert.strictEqual(insp.note, null);
+    assert.strictEqual(insp.broodFrames, null);
+  }
+});
+
+test('admin 看检查记录能看到所有字段', async () => {
+  beforeEachReset();
+  const token = await loginAs('admin', 'admin123');
+  const res = await request(app).get('/api/hives').set('Authorization', `Bearer ${token}`);
+  const hiveId = res.body.data[0].id;
+
+  const inspections = await request(app).get(`/api/hives/${hiveId}/inspections`).set('Authorization', `Bearer ${token}`);
+  assert.strictEqual(inspections.status, 200);
+  if (inspections.body.data.length > 0) {
+    const insp = inspections.body.data[0];
+    assert.notStrictEqual(insp.disease, undefined);
+    assert.notStrictEqual(insp.note, undefined);
+    assert.notStrictEqual(insp.broodFrames, undefined);
+  }
 });

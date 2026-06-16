@@ -5,6 +5,7 @@ const cors = require('cors');
 
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
+const organizationsRouter = require('./routes/organizations');
 const apiariesRouter = require('./routes/apiaries');
 const hivesRouter = require('./routes/hives');
 const harvestsRouter = require('./routes/harvests');
@@ -22,6 +23,7 @@ function createApp() {
 
   app.use('/api/auth', authRouter);
   app.use('/api/users', usersRouter);
+  app.use('/api/organizations', organizationsRouter);
   app.use('/api/apiaries', apiariesRouter);
   app.use('/api/hives', hivesRouter);
   app.use('/api/harvests', harvestsRouter);
